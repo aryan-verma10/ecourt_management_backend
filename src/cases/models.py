@@ -43,7 +43,7 @@ class CaseHearingModel(Base):
     rival_advocate_name = Column(String, nullable=True)
     hearing_notes = Column(Text, nullable=True)
 
-    # relationships [foreign key constraints are only needed when same ref given to table]
+    # relationships [ foreign key constraints are only needed when same ref given to table]
     cases = relationship("CaseModel", back_populates="case_hearings")
 
 
