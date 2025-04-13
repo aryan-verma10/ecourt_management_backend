@@ -18,6 +18,9 @@ class ResponseConstants:
     REQUEST_DATA_EMPTY = "Request data empty."
     CASE_HEARING_DATA_UPDATED_SUCCESSFULLY = "Case hearing updated successfully."
     CASE_HEARING_DELETED_SUCCESSFULLY = "Case hearing delete successfully."
+    CASE_DETAILED_DATA_FETCHED_SUCCESSFULLY = "Case detailed data fetched successfuully."
+    CASE_DELETED_SUCCESSFULLY = "Case deleted successfully."
+    CASE_ORDER_ADDED_SUCCESSFULLY = "Case order added successfully."
 
 
 class RedisConstants:
@@ -25,4 +28,6 @@ class RedisConstants:
         Redis variable constants
     '''
     CASE_DETAILS = "case_details_case_id:"
-    CASE_HEARING_DETAILS_ADMIN = "case_details_admin_case_hearing_id:"
+    CASE_FULL_DETAILS_BY_CASE_NUMBER = "case_full_details:"
+    ADMIN_CASE_HEARING_DETAILS_ADMIN = "admin_case_details_admin_case_hearing_id:"
+    ADMIN_CASE_DETAILS_BY_ID = "admin_case_details_by_id:"

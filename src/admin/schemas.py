@@ -47,3 +47,10 @@ class CaseHearingUpdateSchema(BaseModel):
     judge_name : Optional[str] = None
     rival_advocate_name : Optional[str] = None
     hearing_notes : Optional[str] = None
+
+
+class CaseOrderSchema(BaseModel):
+    case_id : str
+    order_date : str
+    order_details : str
+    

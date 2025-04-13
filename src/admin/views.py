@@ -3,14 +3,17 @@ from src.database import session_dep, get_redis_client
 from src.utilities import generic_json_response, pagination_helper_func, str_to_date_func
 from src.constants import ResponseConstants, RedisConstants
 from sqlalchemy.future import select
-from src.cases.models import CaseModel, CaseHearingModel, CaseOrderModel
-from src.admin.schemas import (CasesCreateSchema, CasesUpdateSchema, CaseHearingSchema, CaseHearingUpdateSchema)
+from src.cases.models import CaseModel, CaseHearingModel, CaseOrderModel, CaseAdvocatesModel
+from src.admin.schemas import (CasesCreateSchema, CasesUpdateSchema
+                               , CaseHearingSchema, CaseHearingUpdateSchema
+                               , CaseOrderSchema)
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.sql import func
 from sqlalchemy import or_, bindparam, delete
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import selectinload
 from src.cases.utility import CaseStatus
 import math
+from datetime import datetime
 import json
 
 
@@ -185,6 +188,7 @@ class CaseUpdationView:
             try:
                 await db.commit()
                 await db.refresh(case_obj)
+                await redis.delete(RedisConstants.ADMIN_CASE_DETAILS_BY_ID+str(case_id))
 
             except Exception as err:
                 await db.rollback()
@@ -214,27 +218,103 @@ class CaseUpdationView:
         
 
 # incomplete as post is needed before it
-class CaseUpdationByIdView:
+class CaseByIdView:
     '''
         Api collection by Id case summary and changes
     '''
     async def get(self, case_id: str, db: session_dep, redis = Depends(get_redis_client)):
         try:
+
+            cached_case_obj = await redis.get(RedisConstants.ADMIN_CASE_DETAILS_BY_ID+str(case_id))
+            if cached_case_obj:
+                cached_case_data = json.loads(cached_case_obj)
+                return generic_json_response(
+                    success = True,
+                    status_code = 200,
+                    message = ResponseConstants.CASE_DETAILED_DATA_FETCHED_SUCCESSFULLY,
+                    data = cached_case_data
+                )
+
+
             base_query = (select(CaseModel)
                           .options(
-                              joinedload(CaseModel.case_hearings),
-                              joinedload(CaseModel.case_orders),
-                              joinedload(CaseModel.case_advocates)
+                              selectinload(CaseModel.case_hearings),
+                              selectinload(CaseModel.case_orders),
+                              selectinload(CaseModel.case_advocates).selectinload(CaseAdvocatesModel.advocates)
                               )
                           .filter(CaseModel.id == case_id)
                           )
             
             cases_objs = await db.execute(base_query)
-            
-            print("cases_objs->", cases_objs)
+            cases_objs = cases_objs.scalar_one_or_none()
 
-            return {"hello", "world"}
+            if not cases_objs:
+                return generic_json_response(
+                    success = False,
+                    status_code = 404,
+                    message = ResponseConstants.NO_CASES_FOUND
+                )
+            
+
+            response_body = {
+                    "case_id": str(cases_objs.id),
+                    "case_number": cases_objs.case_number,
+                    "case_title": cases_objs.case_title,
+                    "court_name": cases_objs.court_name,
+                    "filing_date": cases_objs.filing_date.isoformat() if cases_objs.filing_date else None,
+                    "upcoming_hearing_date": cases_objs.upcoming_hearing_date.isoformat() if cases_objs.upcoming_hearing_date else None,
+                    "case_status": cases_objs.case_status,
+                    "case_hearings_data" : [],
+                    "case_orders_data": [],
+                    "case_advocates_data": []
+                }
+
+            # case_hearing data updating related to this case
+            for case_hearing in cases_objs.case_hearings:
+                response_body_case_hearing = {
+                        "case_hearing_id": case_hearing.id,
+                        "hearing_date": case_hearing.hearing_date.isoformat() if case_hearing.hearing_date else None,
+                        "judge_name": case_hearing.judge_name,
+                        "rival_advocate_name": case_hearing.rival_advocate_name,
+                        "hearing_notes": case_hearing.hearing_notes
+                    }
+
+                response_body["case_hearings_data"].append(response_body_case_hearing)
+
+            # case orders data updating related to this case
+            for case_order in cases_objs.case_orders:
+                response_body_case_order = {
+                        "case_order_id": case_order.id,
+                        "order_date": case_order.order_date.isoformat() if case_hearing.hearing_date else None,
+                        "order_details": case_order.order_details
+                    }
+
+                response_body["case_orders_data"].append(response_body_case_order)
+
+
+            # case advocate data updating related to this case
+            for case_advocate in cases_objs.case_advocates:
+                advocate = case_advocate.advocate
+                response_body_case_advocates = {
+                        "name": advocate.name,
+                        "phone_number": advocate.phone_number,
+                        "email": advocate.email,
+                        "bar_council_number": advocate.bar_council_number
+                    }
+
+                response_body["case_advocates_data"].append(response_body_case_advocates)
+                
+            # redis data input
+            await redis.set(RedisConstants.ADMIN_CASE_DETAILS_BY_ID+str(case_id), json.dumps(response_body), ex = 10*24*60*60)
+            
+            return generic_json_response(
+                success = True,
+                status_code = 200,
+                message = ResponseConstants.CASE_DETAILED_DATA_FETCHED_SUCCESSFULLY,
+                data = response_body
+            )
         
+
         except Exception as err:
             return generic_json_response(
                 success = False,
@@ -242,6 +322,57 @@ class CaseUpdationByIdView:
                 message = ResponseConstants.INTERNAL_SERVER_ERROR,
                 error = str(err)
             )
+        
+    
+    async def delete(self, case_id: str, db: session_dep, redis = Depends(get_redis_client)):
+        '''
+            [SOFT DELETE] delete api to solft delete the case by case_id
+        '''
+        try:
+            base_query = select(CaseModel).filter(CaseModel.id == case_id)
+            case_obj = await db.execute(base_query)
+            case_obj = case_obj.scalar_one_or_none().first()
+
+            if not case_obj:
+                return generic_json_response(
+                    success = False,
+                    status_code = 404,
+                    message = ResponseConstants.CASE_NOT_FOUND
+                )
+            
+            case_obj.delete = datetime.now()
+            
+            try:
+                await db.commit()
+                await db.refresh(case_obj)
+
+                redis_delete_list = [ResponseConstants.ADMIN_CASE_DETAILS_BY_ID+str(case_id),
+                                    ResponseConstants.CASE_DETAILS+str(case_id)]
+                await redis.delete(*redis_delete_list)
+
+            except Exception as err:
+                await db.rollback()
+                return generic_json_response(
+                    success = False,
+                    status_code = 500,
+                    message = ResponseConstants.DATABASE_ERROR,
+                    error = str(err)
+                )
+
+            return generic_json_response(
+                    success = True,
+                    status_code = 200,
+                    message = ResponseConstants.CASE_DELETED_SUCCESSFULLY
+                )
+
+        except Exception as err:
+            return generic_json_response(
+                success = False,
+                status_code = 500,
+                message = ResponseConstants.INTERNAL_SERVER_ERROR,
+                error = str(err)
+            )
+
 
 
 class CaseHearingUpdateByIdViews:
@@ -266,7 +397,7 @@ class CaseHearingUpdateByIdViews:
                 await db.refresh(case_hearing_obj)
 
             except Exception as err:
-                await db.roll_back()
+                await db.rollback()
                 return generic_json_response(
                     success = False,
                     status_code = 500,
@@ -373,11 +504,14 @@ class CaseHearingUpdateByIdViews:
             try:
                 await db.commit()
                 await db.refresh(case_hearing_obj)
-                await redis.delete(RedisConstants.CASE_HEARING_DETAILS_ADMIN+str(case_hearing_id))
+                redis_deletion_list = [RedisConstants.ADMIN_CASE_DETAILS_BY_ID+str(case_hearing_obj.case_id),
+                                       RedisConstants.CASE_HEARING_DETAILS_ADMIN+str(case_hearing_id)]
+
+                await redis.delete(*redis_deletion_list)
 
 
             except Exception as err:
-                await db.roll_back()
+                await db.rollback()
                 return generic_json_response(
                     success = False,
                     status_code = 500,
@@ -439,7 +573,54 @@ class CaseHearingUpdateByIdViews:
                 message = ResponseConstants.INTERNAL_SERVER_ERROR,
                 error = str(err)
             )
-        
+
+
+class CaseOrderViews:
+    '''
+        Api collection to add case orders
+    '''    
+    async def post(self, case_schema: CaseOrderSchema, db: session_dep):
+        try:
+            case_schema = case_schema.model_dump()
+            case_id = case_schema.get("case_id", None)
+            order_date = case_schema.get("order_date", None)
+            order_details = case_schema.get("order_details", None)
+
+            case_order_obj = CaseOrderModel(
+                case_id = case_id,
+                order_date = str_to_date_func(order_date),
+                order_details = order_details
+            )
+
+            try:
+                db.add(case_order_obj)
+                await db.commit()
+                await db.refresh(case_order_obj)
+
+                return generic_json_response(
+                    success = True,
+                    status_code = 200,
+                    message = ResponseConstants.CASE_ORDER_ADDED_SUCCESSFULLY
+                )
+
+            except Exception as err:
+                await db.rollback()
+                return generic_json_response(
+                    success = False,
+                    status_code = 500,
+                    message = ResponseConstants.DATABASE_ERROR,
+                    error = str(err)
+                )
+
+        except Exception as err:
+            return generic_json_response(
+                success = False,
+                status_code = 500,
+                message = ResponseConstants.INTERNAL_SERVER_ERROR,
+                error = str(err)
+            )
 
 case_update_view = CaseUpdationView()
 case_hearing_update_view = CaseHearingUpdateByIdViews()
+case_by_id_view = CaseByIdView()
+case_order_view = CaseOrderViews()
